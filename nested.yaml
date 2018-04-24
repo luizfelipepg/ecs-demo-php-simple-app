@@ -1,0 +1,92 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  This template shows how to use AWS CodePipeline, CodeBuild and CodeDeploy to build update
+  a running deployment in a Kubernetes cluster.
+
+Parameters:
+  AmiId: 
+    Description: AMI to use for stack
+    Type: AWS::EC2::Image::Id
+    Default: ami-2b9b5249
+
+  InstanceType:
+    Description: Instance type to use for nat hosts
+    Type: String
+    Default: t2.micro
+
+  KeyName:
+    Description: SSH Key for Kops Kreator
+    Type: String
+    Default: p7handsonlabs
+  
+  EcrRepositoryName:
+    Description: Name of ECS/ECR repo for storing adhoc docker imagaes
+    Type: String
+    Default: p7handsonlabs
+  
+  SshCidrRange:
+    Description: Ssh Whitelisting
+    Type: String
+    Default: 0.0.0.0/0
+    AllowedPattern: '(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})/(\d{1,2})'
+
+Metadata:
+  AWS::CloudFormation::Interface:
+      
+    ParameterGroups:
+      - Label:
+          default: EC2 Configuration
+        Parameters:
+          - InstanceType
+          - AmiId
+          - KeyName
+
+Resources:
+  K8sRepo:
+    Type: AWS::ECR::Repository
+    Properties: 
+      RepositoryName: 
+        !Ref EcrRepositoryName
+      RepositoryPolicyText: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Sid: AllowPushPull
+            Effect: Allow
+            Principal: 
+              AWS: 
+                - "*"
+            Action: 
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:PutImage"
+              - "ecr:InitiateLayerUpload"
+              - "ecr:UploadLayerPart"
+              - "ecr:CompleteLayerUpload"
+            
+  VPC:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/p7handsonlabs.polarseven.com/stacks/k8s/templates/vpc.yaml"
+      Parameters:
+        Name: !Ref AWS::StackName
+        VpcCIDR: 10.215.0.0/16
+        Subnet1CIDR: 10.215.10.0/24
+        Subnet2CIDR: 10.215.20.0/24
+
+  Cluster:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://s3.amazonaws.com/p7handsonlabs.polarseven.com/stacks/k8s/templates/kube-ec2.yaml"
+      Parameters:
+        AmiId: !Ref AmiId
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        Subnets: !GetAtt VPC.Outputs.Subnets
+        VpcId: !GetAtt VPC.Outputs.VpcId
+        AvailabilityZone1: ap-southeast-2a
+        AvailabilityZone2: ap-southeast-2b
+        RepositoryName: !Ref EcrRepositoryName
+        SshCidrRange: !Ref SshCidrRange

@@ -1,0 +1,162 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Polar Seven Dev Tools NAT Single Node
+Parameters:
+  AmiId: 
+    Description: AMI to use for stack
+    Type: AWS::EC2::Image::Id
+    Default: ami-1eec247c
+  InstanceType:
+    Description: Instance type to use for nat hosts
+    Type: String
+    Default: t2.micro
+  VpcId:
+    Description: VPC to create instance
+    Type: AWS::EC2::VPC::Id
+  Subnets:
+    Description: Subnets for Kops Kreator
+    Type: List<AWS::EC2::Subnet::Id>
+  AvailabilityZone1:
+    Description: ASG az
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-southeast-2a
+  AvailabilityZone2:
+    Description: ASG az
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: ap-southeast-2b
+  KeyName:
+    Description: SSH key for instance
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: p7handsonlabs
+  RepositoryName:
+    Description: ECR URI to store docker images
+    Type: String
+  SshCidrRange:
+    Description: SSH whitelisting
+    Type: String
+
+Resources:
+  RootRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+              Service: 
+                - "ec2.amazonaws.com"
+            Action: 
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies: 
+        - 
+          PolicyName: "root"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement: 
+              - 
+                Effect: "Allow"
+                Action: "*"
+                Resource: "*"
+  RootInstanceProfile: 
+    Type: "AWS::IAM::InstanceProfile"
+    Properties: 
+      Path: "/"
+      Roles: 
+        - 
+          Ref: "RootRole"
+
+  Metadata:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType:
+        Ref: InstanceType
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          default:
+          - cluster
+        cluster:
+          commands:
+            create-cluster:
+              command: "sudo /opt/k8s/k8create.sh" 
+            get-ecr:
+              command: 
+                Fn::Join:
+                - ' '
+                - - "echo"
+                  - Ref: RepositoryName
+                  - "/opt/k8s/ecr.txt"
+
+  SecurityGroupNat:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security rules for NAT servers.
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: '0.0.0.0/0'
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: !Ref SshCidrRange
+      
+    
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: true
+      ImageId: !Ref AmiId
+      InstanceType:
+        Ref: InstanceType
+      InstanceMonitoring: 'false'
+      KeyName:
+        Ref: KeyName
+      SecurityGroups:
+      - Ref: SecurityGroupNat
+      IamInstanceProfile: !Ref RootInstanceProfile
+      UserData:
+        Fn::Base64:
+          Fn::Join:
+          - ''
+          - - "#!/bin/bash\n"
+            - "export JAVA_HOME=/usr/lib/jvm/jre\n"
+            - "export EC2_HOME=/opt/aws/apitools/ec2\n"
+            - "service awslogs start\n"
+            - '/opt/aws/bin/cfn-init -v '
+            - '         --stack '
+            - Ref: AWS::StackName
+            - " -r Metadata --region "
+            - Ref: AWS::Region
+            - "\n"
+  AutoscalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones:
+      - Ref: AvailabilityZone1
+      - Ref: AvailabilityZone2
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      DesiredCapacity: '1'
+      MaxSize: '1'
+      MinSize: '1'
+      VPCZoneIdentifier:
+      - !Select [ 0, !Ref Subnets ]
+      - !Select [ 1, !Ref Subnets ]
+      Tags:
+      - Key: Name
+        Value: KUBERNETES - Cluster Builder
+        PropagateAtLaunch: 'true'
+Outputs:
+  KopsASG:
+    Value: !Ref AutoscalingGroup
