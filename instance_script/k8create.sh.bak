@@ -1,0 +1,72 @@
+#!/bin/bash
+# Setup for Kops cluster 
+source /opt/k8s/logit.sh
+>/var/log/kops.log
+service awslogs start
+
+which kops
+pwd
+kops create cluster 
+SNS_ARN=$(aws sns list-topics --region ap-southeast-2 | grep "k8s-sns" | awk -F" " '{ print $2 }' | tr -d '"') 
+S3_BUCKET="p7handsondays-$(aws sts get-caller-identity --output text --query 'Account')-$(date +%H%M%S)"
+echo  $SNS_ARN
+echo $S3_BUCKET
+
+# Create bucket 
+log "aws s3api create-bucket --bucket $KOPS_STATE_STORE --region ap-southeast-2 --create-bucket-configuration LocationConstraint=ap-southeast-2"
+aws s3api create-bucket --bucket $S3_BUCKET --region ap-southeast-2 --create-bucket-configuration LocationConstraint=ap-southeast-2
+log "KOPS_STATE_STORE = $S3_BUCKET"  
+echo "KOPS_STATE_STORE = $S3_BUCKET"
+
+#Setup env vars
+export KOPS_FEATURE_FLAGS="+DrainAndValidateRollingUpdate"
+export AWS_DEFAULT_REGION=ap-southeast-2
+export KOPS_STATE_STORE=s3://$S3_BUCKET
+export NAME=cluster.k8s.local
+export NODE_SIZE=${NODE_SIZE:-t2.micro}
+export MASTER_SIZE=${MASTER_SIZE:-t2.medium}
+
+# Create SSH key
+rm -f ~/.ssh/id_rsa*
+ssh-keygen -t rsa -f ~/.ssh/id_rsa -q -P ""
+log "SSH key created ......"
+
+log "Creating K8S cluster ......"
+exit
+kops create cluster --name=${NAME} --cloud=aws --zones=ap-southeast-2a --node-count=2 --node-size $NODE_SIZE --master-zones=ap-southeast-2a --master-size=$MASTER_SIZE --state=$KOPS_STATE_STORE --networking=calico --yes
+
+log "Waiting for cluster to come up ........"
+sleep 30
+EXIT=0
+log  "Checking cluster for readiness......................."
+while [ "$EXIT" = "0"  ]
+do
+   READY=$(kops validate cluster cluster.k8s.local | grep "Your cluster cluster.k8s.local is ready")
+   if [ "$READY" != "" ]
+   then
+      echo "Cluster state is $READY"
+      log "Cluster state is $READY"
+      EXIT=1
+   else
+      echo "Cluster is not ready......................."
+      log "Cluster is not ready......................."
+      sleep 30
+   fi
+done
+
+log "kubectl apply -f /opt/k8s/dashboard.yaml"
+kubectl apply -f /opt/k8s/dashboard.yaml
+sleep 5
+log "kubectl apply -f /opt/k8s/app.yaml"
+kubectl apply -f /opt/k8s/app.yaml
+sleep 5
+echo "get admin password"
+log "get admin password"
+PASSWORD=`kubectl config view --minify | grep "password" | awk -F":" '{ print $2 }'`
+log "UI access user: admin pass: $PASSWORD" 
+echo $PASSWORD > password.txt
+echo "--state=$KOPS_STATE_STORE" >> password.txt
+echo "SNS admin password"
+log "SNS admin password"
+log "aws sns publish --topic-arn "$SNS_ARN" --message file://password.txt --region ap-southeast-2"
+log "`aws sns publish --topic-arn "$SNS_ARN" --message file://password.txt --region ap-southeast-2`"
